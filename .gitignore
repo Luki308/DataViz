@@ -161,3 +161,4 @@ cython_debug/
 
 # Data
 clustering-data-v1/
+results/

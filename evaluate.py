@@ -1,3 +1,4 @@
+import copy
 import os
 import numpy as np
 import pandas as pd
@@ -16,6 +17,7 @@ class ClusteringEvaluator:
         'battery': pd.Series(dtype='str'),
         'dataset': pd.Series(dtype='str'),
         'method': pd.Series(dtype='str'),
+        'labels': pd.Series(dtype='str'),
         'n_clusters': pd.Series(dtype='int'),
         'rand_score': pd.Series(dtype='float'),
         'silhouette_score': pd.Series(dtype='float'),
@@ -51,32 +53,62 @@ class ClusteringEvaluator:
         Returns:
             An instance of the clustering algorithm
         """
-        params = None
+
         if method == 'kmeans':
-            return KMeans(), params
+            return KMeans()
         elif method == 'dbscan':
             # DBSCAN requires eps and min_samples parameters
             eps = kwargs.get('eps', 0.5)
             min_samples = kwargs.get('min_samples', 5)
-            if eps != 0.5:
-                params = {'eps': eps}
-            elif min_samples != 5:
-                params = {'min_samples': min_samples}
-            elif eps != 0.5 and min_samples != 5:
-                params = {'eps': eps, 'min_samples': min_samples}
-            return DBSCAN(eps=eps, min_samples=min_samples), params
+            return DBSCAN(eps=eps, min_samples=min_samples)
         elif method == 'agglomerative':
             linkage = kwargs.get('linkage', 'ward')
-            if linkage != 'ward':
-                params = {'linkage': linkage}
-            return AgglomerativeClustering(linkage=linkage), params
+            return AgglomerativeClustering(linkage=linkage)
         elif method == 'genie':
             gini_threshold = kwargs.get('gini_threshold', 0.3)
-            if gini_threshold != 0.3:
-                params = {'gini_threshold': gini_threshold}
-            return genieclust.Genie(gini_threshold=gini_threshold), params
+            return genieclust.Genie(gini_threshold=gini_threshold)
         else:
             raise ValueError(f"Unknown method: {method}")
+        
+    def custom_fit_predict_many(self, clusterer, data, n_clusters):
+        """
+        Custom implementation of fit_predict_many that handles duplicate cluster numbers
+        by returning a dictionary with unique keys for each partition.
+        
+        Args:
+            clusterer: Clustering algorithm instance
+            data: Dataset to cluster
+            n_clusters: List of cluster numbers
+            
+        Returns:
+            Dictionary mapping unique keys to cluster assignments
+        """
+        results = {}
+        
+        # Create a unique key for each n_cluster value by appending an index for duplicates
+        cluster_counts = {}
+        
+        for i, k in enumerate(n_clusters):
+            k = int(k)  # Ensure k is an integer
+
+            # Use original number as key for first occurrence
+            if k not in cluster_counts:
+                key = str(k)
+                cluster_counts[k] = 1
+            else:
+                # For duplicates, append a suffix to the key: k_1, k_2, etc.
+                key = f"{k}_{cluster_counts[k]}"
+                cluster_counts[k] += 1
+                
+            # Clone the clusterer and set n_clusters if it has this parameter
+            clone_clusterer = copy.deepcopy(clusterer)
+            if hasattr(clusterer, 'n_clusters'):
+                clone_clusterer.n_clusters = k
+            pred_labels = clone_clusterer.fit_predict(data) + 1
+    
+            results[key] = pred_labels
+        
+        return results
 
     def do_all(self, battery: str, dataset: str, plot:bool) -> None:
 
@@ -84,7 +116,7 @@ class ClusteringEvaluator:
         print(f"Loaded data for {battery} - {dataset}")
 
         method_params = []
-            # Create a list of (method, params_dict) tuples to iterate over
+        # Create a list of (method, params_dict) tuples to iterate over
         for method in self.methods:
             if method == 'genie':
                 # For genie, use different gini_threshold values
@@ -97,14 +129,18 @@ class ClusteringEvaluator:
             else:
                 # For other methods, use default params
                 method_params.append((method, {}))
-
-        # Number of rows in the subplot grid should be based on method_params length
-        num_rows = len(method_params) + 1  # +1 for the true labels row
-        
+       
+        # Plot true labels
         if plot:
-            plt.figure(figsize=(10, 30))
+            # Dynamically adjust figure width based on number of clusters
+            n_cols = len(self.n_clusters)
+            num_rows = len(method_params) + 1  # +1 for the true labels row
+            fig_width = max(5, 5 * n_cols)  # Base width of 5 per column, minimum 10
+            fig_height = max(10, 4 * num_rows)  # Dynamic height based on rows
+            plt.figure(figsize=(fig_width, fig_height))
+            
             for i in range(len(self.labels)):
-                plt.subplot(num_rows, len(self.labels), i + 1)
+                plt.subplot(num_rows, n_cols, i + 1)
                 genieclust.plots.plot_scatter(
                     self.data,
                     labels=self.labels[i]-1,
@@ -113,24 +149,23 @@ class ClusteringEvaluator:
                 )
 
         for iter, (method, params) in enumerate(method_params):
-            # Results shoulf be stored in a dictionary with keys as the number of clusters and list of labels as values
+            # Results should be stored in a dictionary with keys as the number of clusters and list of labels as values
 
-            # Create the clusterer
-            if method == 'dbscan':
-                results = {}
-                for i, k in enumerate(self.n_clusters):
-                    clusterer, param_dict = self.get_clusterer(method, **params)
-                    pred_labels = clusterer.fit_predict(self.data)+1
-                    results[int(k)] = pred_labels
-            else:
-                clusterer, param_dict = self.get_clusterer(method, **params)
-                results = clustbench.fit_predict_many(clusterer, self.data, self.n_clusters)
+            # create a clusterer
+            clusterer = self.get_clusterer(method, **params)
+            results = self.custom_fit_predict_many(clusterer, self.data, self.n_clusters)
+            
+            for i, k_key in enumerate(results):
 
-            # plot results vs true labels
-            if plot:
-                for i, k in enumerate(results):
+                if isinstance(k_key, str) and '_' in k_key:
+                    k = int(k_key.split('_')[0])
+                else:
+                    k = k_key
+                                
+                # plot results vs true labels
+                if plot:
                     # Update subplot position using num_rows instead of len(self.methods)+1
-                    ax = plt.subplot(num_rows, len(results), (iter+1) * len(results) + i + 1)
+                    ax = plt.subplot(num_rows, n_cols, (iter+1) * len(results) + i + 1)
                     
                     # Create method title with parameters
                     if method == 'genie' and 'gini_threshold' in params:
@@ -142,14 +177,14 @@ class ClusteringEvaluator:
                     
                     genieclust.plots.plot_scatter(
                         self.data,
-                        labels=results[k]-1,
+                        labels=results[k_key]-1,
                         axis='equal',
                         title=title,
                     )
                     
                     # The rest of your confusion matrix code remains the same
                     confusion_matrix = genieclust.compare_partitions.confusion_matrix(
-                        self.labels[i], results[k]
+                        self.labels[i], results[k_key]
                     )
                     cm_str = StringIO()
                     np.savetxt(cm_str, confusion_matrix, fmt='%d', delimiter=' | ', footer="\nTrue \\\\ Pred", comments = '')
@@ -161,27 +196,206 @@ class ClusteringEvaluator:
                         ha='right', va='bottom',
                         bbox=dict(facecolor='white', alpha=0.5, edgecolor='black')
                     )
-
-            # store results in dataframe
-            for i, k in enumerate(results):
-                df = pd.DataFrame({
+                # Check if this configuration already exists
+                if not self.check_if_exists(battery, dataset, method, int(k), params, i):
+                    df = pd.DataFrame({
                     "battery": battery,
                     "dataset": dataset,
                     "method": method,
-                    "n_clusters": k,
-                    "rand_score": adjusted_rand_score(self.labels[i], results[k]),
-                    "silhouette_score": silhouette_score(self.data, results[k]),
+                    "labels": f'labels{i}',
+                    "n_clusters": int(k),  # Store the original cluster number
+                    "rand_score": adjusted_rand_score(self.labels[i], results[k_key]),
+                    "silhouette_score": silhouette_score(self.data, results[k_key]),
                     # "NCA": clustbench.get_score(self.labels[i], results[k])
                     "NCA": genieclust.compare_partitions.normalized_clustering_accuracy(
-                        self.labels[i], results[k]),
+                        self.labels[i], results[k_key]),
                     'params': 'default',
                 }, index=[0])
-                if params is not None:
-                    for key, value in params.items():
-                        df[key] = value
+                    if params is not None:
+                        for key, value in params.items():
+                            df[key] = value
 
-                self.results_df = pd.concat([self.results_df, df], ignore_index=True)
+                    self.results_df = pd.concat([self.results_df, df], ignore_index=True)
+                else:
+                    print(f"Skipping existing result: {battery}-{dataset}, {method}, k={k}, params={params}")
+
         if plot:
             plt.tight_layout()
             plt.show()
 
+    def evaluate_single_method(self, battery: str, dataset: str, method: str, plot: bool = False, **kwargs) -> None:
+        """
+        Evaluate a single clustering method with custom parameters on a specific dataset.
+        
+        Args:
+            battery: Name of the battery (e.g., 'wut')
+            dataset: Name of the dataset (e.g., 'x2')
+            method: Clustering method ('kmeans', 'dbscan', 'agglomerative', 'genie')
+            plot: Whether to plot the clustering results
+            **kwargs: Custom parameters for the clustering method
+        """
+        # Load data if not already loaded or if different dataset is requested
+        if not hasattr(self, 'data') or (hasattr(self, 'b') and 
+                                        (self.b.battery != battery or self.b.dataset != dataset)):
+            self.load_data(battery, dataset)
+            print(f"Loaded data for {battery} - {dataset}")
+        
+        # Get the clusterer with custom parameters
+        clusterer = self.get_clusterer(method, **kwargs)
+        
+        # Get clustering results using the same method as do_all
+        results = self.custom_fit_predict_many(clusterer, self.data, self.n_clusters)
+        
+        # Plot results if requested
+        if plot:
+            n_cols = len(self.n_clusters)
+            fig_width = max(5, 5 * n_cols)  # Base width of 5 per column, minimum 5
+            plt.figure(figsize=(fig_width, 4*2))
+            
+            # Plot true labels first
+            for i, k in enumerate(self.n_clusters):
+                plt.subplot(2, n_cols, i + 1)
+                genieclust.plots.plot_scatter(
+                    self.data,
+                    labels=self.labels[i] - 1,
+                    axis='equal',
+                    title=f"True Labels (k = {k})",
+                )
+            
+            # Plot predicted labels - make consistent with do_all method
+            for i, k_key in enumerate(results):
+                # Extract original k value if it's a string key with format "k_n"
+                if isinstance(k_key, str) and '_' in k_key:
+                    k = int(k_key.split('_')[0])
+                else:
+                    k = k_key
+                    
+                ax = plt.subplot(2, len(results), len(results) + i + 1)
+                
+                # Create method title with parameters
+                if method == 'genie' and 'gini_threshold' in kwargs:
+                    title = f"{method.capitalize()} (g={kwargs['gini_threshold']}) k={k}"
+                elif method == 'agglomerative' and 'linkage' in kwargs:
+                    title = f"{method.capitalize()} ({kwargs['linkage']}) k={k}"
+                elif method == 'dbscan':
+                    title = f"{method.capitalize()} (eps={kwargs.get('eps', 0.5)}, min_samples={kwargs.get('min_samples', 5)})"
+                else:
+                    title = f"{method.capitalize()} Labels (k = {k})"
+                
+                genieclust.plots.plot_scatter(
+                    self.data,
+                    labels=results[k_key] - 1,
+                    axis='equal',
+                    title=title,
+                )
+                
+                # Add confusion matrix
+                confusion_matrix = genieclust.compare_partitions.confusion_matrix(
+                    self.labels[i], results[k_key]
+                )
+                cm_str = StringIO()
+                np.savetxt(cm_str, confusion_matrix, fmt='%d', delimiter=' | ', footer="\nTrue \\\\ Pred", comments='')
+                cm_text = cm_str.getvalue()
+                ax.text(
+                    0.95, 0.05, cm_text,
+                    transform=ax.transAxes,
+                    fontsize=8,
+                    ha='right', va='bottom',
+                    bbox=dict(facecolor='white', alpha=0.5, edgecolor='black')
+                )
+            
+            plt.tight_layout()
+            plt.show()
+        
+        # Store results in dataframe
+        for i, k_key in enumerate(results):
+            # Extract original k value if it's a string key
+            if isinstance(k_key, str) and '_' in k_key:
+                k = int(k_key.split('_')[0])
+            else:
+                k = k_key
+                
+            # Check if this configuration already exists
+            if not self.check_if_exists(battery, dataset, method, int(k), kwargs, i):
+                df = pd.DataFrame({
+                    "battery": battery,
+                    "dataset": dataset,
+                    "method": method,
+                    "labels": f'labels{i}',
+                    "n_clusters": int(k),  # Store the original cluster number
+                    "rand_score": adjusted_rand_score(self.labels[i], results[k_key]),
+                    "silhouette_score": silhouette_score(self.data, results[k_key]),
+                    "NCA": genieclust.compare_partitions.normalized_clustering_accuracy(
+                        self.labels[i], results[k_key]),
+                    'params': 'custom',
+                }, index=[0])
+                
+                # Add all custom parameters to the dataframe
+                for key, value in kwargs.items():
+                    df[key] = value
+                
+                self.results_df = pd.concat([self.results_df, df], ignore_index=True)
+            else:
+                print(f"Skipping existing result: {battery}-{dataset}, {method}, k={k}, params={kwargs}")
+
+    def check_if_exists(self, battery, dataset, method, n_clusters=None, params_dict=None, labels_index=None):
+        """
+        Check if a result with the given parameters already exists in the results dataframe.
+        
+        Args:
+            battery: Battery name
+            dataset: Dataset name
+            method: Clustering method
+            n_clusters: Number of clusters (optional)
+            params_dict: Dictionary of additional parameters
+            labels_index: Specific labels index (optional)
+            
+        Returns:
+            Boolean indicating whether the combination exists
+        """
+        # Check if the dataframe is empty
+        if len(self.results_df) == 0:
+            return False
+            
+        # Start with basic filters
+        mask = (
+            (self.results_df['battery'] == battery) &
+            (self.results_df['dataset'] == dataset) &
+            (self.results_df['method'] == method)
+        )
+        
+        # Add n_clusters filter if provided
+        if n_clusters is not None:
+            mask &= (self.results_df['n_clusters'] == n_clusters)
+
+        # Check the specific labels index if provided
+        if labels_index is not None:
+            mask &= (self.results_df['labels'] == f'labels{labels_index}')
+        # Add params type filter
+        if params_dict is None:
+            mask &= (self.results_df['params'] == 'default')
+        else:
+            mask &= (self.results_df['params'] == 'custom')
+            
+            # If we have params, filter by each parameter
+            for param_name, param_value in params_dict.items():
+                if param_name in self.results_df.columns:
+                    mask &= (self.results_df[param_name] == param_value)
+        
+        # Return True if ANY row matches all these conditions
+        return mask.any()
+
+    def save_results(self, filename: str = "results.csv") -> None:
+        """
+        Save the results dataframe to a CSV file.
+        
+        Args:
+            filename: Name of the output CSV file
+        """
+        # Ensure the directory exists
+        if len(self.results_df) == 0:
+            print("No results to save.")
+            return
+
+        self.results_df.to_csv(filename, index=False)
+        print(f"Results saved to {filename}")
