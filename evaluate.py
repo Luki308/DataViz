@@ -25,17 +25,22 @@ class ClusteringEvaluator:
     })
 
 
-    def __init__(self):
+    def __init__(self, data_path: Optional[str] = None):
         """
         Initialize the ClusteringEvaluator with the path to the clustering data.
         
         Args:
             data_path: Path to the clustering data directory
         """
-        self.data_path = os.path.abspath("clustering-data-v1")
+        if data_path is not None:
+            self.data_path = os.path.abspath(data_path)
+        else:
+            self.data_path = os.path.abspath("clustering-data-v1")
         self.methods = ['kmeans', 'dbscan', 'agglomerative', 'genie']
         self.g = [0.1, 0.3, 0.5, 0.7, 0.9]
         self.linkage = ['ward', 'single', 'complete', 'average']
+        self.eps = [0.2]
+        self.min_samples = [5]
     
     def load_data(self, battery: str, dataset: str) -> Tuple[np.ndarray, np.ndarray]:
         self.b = clustbench.load_dataset(battery, dataset, path=self.data_path)
@@ -58,7 +63,7 @@ class ClusteringEvaluator:
             return KMeans()
         elif method == 'dbscan':
             # DBSCAN requires eps and min_samples parameters
-            eps = kwargs.get('eps', 0.5)
+            eps = kwargs.get('eps', 0.2)
             min_samples = kwargs.get('min_samples', 5)
             return DBSCAN(eps=eps, min_samples=min_samples)
         elif method == 'agglomerative':
@@ -126,6 +131,11 @@ class ClusteringEvaluator:
                 # For agglomerative, use different linkage values
                 for linkage in self.linkage:
                     method_params.append((method, {'linkage': linkage}))
+            elif method == 'dbscan':
+                # For dbscan, use different eps and min_samples values
+                for eps in self.eps:
+                    for min_samples in self.min_samples:
+                        method_params.append((method, {'eps': eps, 'min_samples': min_samples}))
             else:
                 # For other methods, use default params
                 method_params.append((method, {}))
@@ -135,7 +145,7 @@ class ClusteringEvaluator:
             # Dynamically adjust figure width based on number of clusters
             n_cols = len(self.n_clusters)
             num_rows = len(method_params) + 1  # +1 for the true labels row
-            fig_width = max(5, 5 * n_cols)  # Base width of 5 per column, minimum 10
+            fig_width = max(10, 5 * n_cols)  # Base width of 5 per column, minimum 10
             fig_height = max(10, 4 * num_rows)  # Dynamic height based on rows
             plt.figure(figsize=(fig_width, fig_height))
             
@@ -172,6 +182,8 @@ class ClusteringEvaluator:
                         title = f"{method.capitalize()} (g={params['gini_threshold']}) k={k}"
                     elif method == 'agglomerative' and 'linkage' in params:
                         title = f"{method.capitalize()} ({params['linkage']}) k={k}"
+                    elif method == 'dbscan':
+                        title = f"{method.capitalize()} (eps={params['eps']}, min_samples={params['min_samples']})"
                     else:
                         title = f"{method.capitalize()} Labels (k = {k})"
                     
@@ -181,21 +193,22 @@ class ClusteringEvaluator:
                         axis='equal',
                         title=title,
                     )
-                    
-                    # The rest of your confusion matrix code remains the same
-                    confusion_matrix = genieclust.compare_partitions.confusion_matrix(
-                        self.labels[i], results[k_key]
-                    )
-                    cm_str = StringIO()
-                    np.savetxt(cm_str, confusion_matrix, fmt='%d', delimiter=' | ', footer="\nTrue \\\\ Pred", comments = '')
-                    cm_text = cm_str.getvalue()
-                    ax.text(
-                        0.95, 0.05, cm_text,
-                        transform=ax.transAxes,
-                        fontsize=8,
-                        ha='right', va='bottom',
-                        bbox=dict(facecolor='white', alpha=0.5, edgecolor='black')
-                    )
+                    # If number of clusters is greather than 5 then do not plot confusion matrix
+                    if int(k) < 6:
+                        # The rest of your confusion matrix code remains the same
+                        confusion_matrix = genieclust.compare_partitions.confusion_matrix(
+                            self.labels[i], results[k_key]
+                        )
+                        cm_str = StringIO()
+                        np.savetxt(cm_str, confusion_matrix, fmt='%d', delimiter=' | ', footer="\nTrue \\\\ Pred", comments = '')
+                        cm_text = cm_str.getvalue()
+                        ax.text(
+                            0.95, 0.05, cm_text,
+                            transform=ax.transAxes,
+                            fontsize=8,
+                            ha='right', va='bottom',
+                            bbox=dict(facecolor='white', alpha=0.5, edgecolor='black')
+                        )
                 # Check if this configuration already exists
                 if not self.check_if_exists(battery, dataset, method, int(k), params, i):
                     df = pd.DataFrame({
@@ -205,7 +218,7 @@ class ClusteringEvaluator:
                     "labels": f'labels{i}',
                     "n_clusters": int(k),  # Store the original cluster number
                     "rand_score": adjusted_rand_score(self.labels[i], results[k_key]),
-                    "silhouette_score": silhouette_score(self.data, results[k_key]),
+                    "silhouette_score": silhouette_score(self.data, results[k_key]) if len(np.unique(results[k_key])) > 1 else float('nan'),
                     # "NCA": clustbench.get_score(self.labels[i], results[k])
                     "NCA": genieclust.compare_partitions.normalized_clustering_accuracy(
                         self.labels[i], results[k_key]),
@@ -249,7 +262,7 @@ class ClusteringEvaluator:
         # Plot results if requested
         if plot:
             n_cols = len(self.n_clusters)
-            fig_width = max(5, 5 * n_cols)  # Base width of 5 per column, minimum 5
+            fig_width = max(10, 5 * n_cols)  # Base width of 5 per column, minimum 5
             plt.figure(figsize=(fig_width, 4*2))
             
             # Plot true labels first
@@ -324,7 +337,7 @@ class ClusteringEvaluator:
                     "labels": f'labels{i}',
                     "n_clusters": int(k),  # Store the original cluster number
                     "rand_score": adjusted_rand_score(self.labels[i], results[k_key]),
-                    "silhouette_score": silhouette_score(self.data, results[k_key]),
+                    "silhouette_score": silhouette_score(self.data, results[k_key]) if len(np.unique(results[k_key])) > 1 else float('nan'),
                     "NCA": genieclust.compare_partitions.normalized_clustering_accuracy(
                         self.labels[i], results[k_key]),
                     'params': 'custom',
