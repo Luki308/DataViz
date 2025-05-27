@@ -255,6 +255,8 @@ class ClusteringEvaluator:
         
         # Get the clusterer with custom parameters
         clusterer = self.get_clusterer(method, **kwargs)
+
+        print(f"clusterer: {clusterer}")
         
         # Get clustering results using the same method as do_all
         results = self.custom_fit_predict_many(clusterer, self.data, self.n_clusters)
@@ -302,20 +304,21 @@ class ClusteringEvaluator:
                     title=title,
                 )
                 
-                # Add confusion matrix
-                confusion_matrix = genieclust.compare_partitions.confusion_matrix(
-                    self.labels[i], results[k_key]
-                )
-                cm_str = StringIO()
-                np.savetxt(cm_str, confusion_matrix, fmt='%d', delimiter=' | ', footer="\nTrue \\\\ Pred", comments='')
-                cm_text = cm_str.getvalue()
-                ax.text(
-                    0.95, 0.05, cm_text,
-                    transform=ax.transAxes,
-                    fontsize=8,
-                    ha='right', va='bottom',
-                    bbox=dict(facecolor='white', alpha=0.5, edgecolor='black')
-                )
+                if int(k) < 6:
+                    # The rest of your confusion matrix code remains the same
+                    confusion_matrix = genieclust.compare_partitions.confusion_matrix(
+                        self.labels[i], results[k_key]
+                    )
+                    cm_str = StringIO()
+                    np.savetxt(cm_str, confusion_matrix, fmt='%d', delimiter=' | ', footer="\nTrue \\\\ Pred", comments = '')
+                    cm_text = cm_str.getvalue()
+                    ax.text(
+                        0.95, 0.05, cm_text,
+                        transform=ax.transAxes,
+                        fontsize=8,
+                        ha='right', va='bottom',
+                        bbox=dict(facecolor='white', alpha=0.5, edgecolor='black')
+                    )
             
             plt.tight_layout()
             plt.show()
